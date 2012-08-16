@@ -1,5 +1,8 @@
 package hudson.plugins.promoted_builds.conditions;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Predicate;
+import com.google.common.collect.Sets;
 import hudson.EnvVars;
 import hudson.Extension;
 import hudson.model.AbstractBuild;
@@ -7,11 +10,9 @@ import hudson.model.AbstractProject;
 import hudson.model.Descriptor;
 import hudson.model.Hudson;
 import hudson.model.InvisibleAction;
-import hudson.model.ItemGroup;
 import hudson.model.ParameterDefinition;
 import hudson.model.ParameterValue;
 import hudson.model.User;
-import hudson.plugins.promoted_builds.PromotedBuildAction;
 import hudson.plugins.promoted_builds.PromotionBadge;
 import hudson.plugins.promoted_builds.PromotionCondition;
 import hudson.plugins.promoted_builds.PromotionConditionDescriptor;
@@ -27,7 +28,6 @@ import net.sf.json.JSONArray;
 import net.sf.json.JSONObject;
 import org.acegisecurity.GrantedAuthority;
 import org.kohsuke.stapler.AncestorInPath;
-import org.kohsuke.stapler.QueryParameter;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.StaplerResponse;
 
@@ -38,7 +38,8 @@ import org.kohsuke.stapler.StaplerResponse;
  * @author Peter Hayes
  */
 public class ManualCondition extends PromotionCondition {
-    private String users;
+    @VisibleForTesting
+    String users;
     private List<ParameterDefinition> parameterDefinitions = new ArrayList<ParameterDefinition>();
 
     public ManualCondition() {
@@ -67,6 +68,10 @@ public class ManualCondition extends PromotionCondition {
         return null;
     }
 
+    /**
+     *
+     * @deprecated Use {@link #getAllowedUsersAsSet()} instead.
+     */
     public Set<String> getUsersAsSet() {
         if (users == null || users.equals(""))
             return Collections.emptySet();
@@ -80,6 +85,27 @@ public class ManualCondition extends PromotionCondition {
         }
         
         return set;
+    }
+
+    public Set<String> getAllowedUsersAsSet() {
+        Set<String> all = getUsersAsSet();
+        Set<String> allowed = Sets.filter(all, new Predicate<String>() {
+            public boolean apply(String input) {
+                return !input.startsWith("!");
+            }
+        });
+        return allowed;
+    }
+    public Set<String> getDisallowedUsersAsSet() {
+        Set<String> all = getUsersAsSet();
+        Set<String> disallowed = Sets.newHashSet();
+        for(String u : all) {
+            if(u.startsWith("!")) {
+                String name = u.substring(1).trim();
+                if(name.length() > 0) disallowed.add(name);
+            }
+        }
+        return disallowed;
     }
 
     @Override
@@ -100,10 +126,15 @@ public class ManualCondition extends PromotionCondition {
      * approved.
      */
     public boolean canApprove(PromotionProcess promotionProcess, AbstractBuild<?,?> build) {
-        if (!getUsersAsSet().isEmpty() && !isInUsersList() && !isInGroupList()) {
+        Set<String> allowed = getAllowedUsersAsSet();
+        Set<String> disallowed = getDisallowedUsersAsSet();
+        if (!allowed.isEmpty() && !isInUsersList(allowed) && !isInGroupList(allowed)) {
             return false;
         }
-        
+        if (isInUsersList(disallowed) || isInGroupList(disallowed)) {
+            return false;
+        }
+
         List<ManualApproval> approvals = build.getActions(ManualApproval.class);
 
         // For now, only allow approvals if this wasn't already approved
@@ -118,20 +149,18 @@ public class ManualCondition extends PromotionCondition {
     /*
      * Check if user is listed in user list as a specific user
      */
-    private boolean isInUsersList() {
+    private boolean isInUsersList(Set<String> set) {
         // Current user must be in users list or users list is empty
-        Set<String> usersSet = getUsersAsSet();
-        return usersSet.contains(Hudson.getAuthentication().getName());
+        return set.contains(Hudson.getAuthentication().getName());
     }
 
     /*
      * Check if user is a member of a groups as listed in the user / group field
      */
-    private boolean isInGroupList() {
-        Set<String> groups = getUsersAsSet();
+    private boolean isInGroupList(Set<String> set) {
         GrantedAuthority[] authorities = Hudson.getAuthentication().getAuthorities();
         for (GrantedAuthority authority : authorities) {
-            if (groups.contains(authority.getAuthority()))
+            if (set.contains(authority.getAuthority()))
                 return true;
         }
         return false;
